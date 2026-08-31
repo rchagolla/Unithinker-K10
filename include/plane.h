@@ -14,7 +14,8 @@ private:
 
 public:
     Plane() = default;
-    Plane(Vector3 normal, Vector3 validPoint, Vector3 color);
+    Plane(Vector3 normal, Vector3 validPoint, Vector3 color = Vector3(1, 1, 1));
+    Vector3 getColor();
     std::tuple<bool, Vector3, Vector3, double> raycast(Ray ray);
 };
 

@@ -10,6 +10,11 @@ Plane::Plane(Vector3 normal, Vector3 validPoint, Vector3 color)
     this->color = color;
 }
 
+Vector3 Plane::getColor()
+{
+    return color;
+}
+
 std::tuple<bool, Vector3, Vector3, double> Plane::raycast(Ray ray)
 {
     double numerator = this->normal.dot(this->validPoint) - this->normal.dot(ray.getOrigin());
