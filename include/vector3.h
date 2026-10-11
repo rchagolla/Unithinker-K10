@@ -104,6 +104,8 @@ struct Vector3
     Vector3 &normalize()
     {
         double currLength = length();
+        if (currLength < 1e-12)
+            return *this; // leave as-is rather than divide by zero
         x /= currLength;
         y /= currLength;
         z /= currLength;

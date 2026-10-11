@@ -2,6 +2,7 @@
 #include <vector>
 #include "plane.h"
 #include "ray.h"
+#include "sphere.h"
 #include "vector3.h"
 #include "unihiker_k10.h"
 
@@ -15,22 +16,36 @@ const double PIXEL_WIDTH = 2.0 / PIXELS_DOWN; // 2 units over 320 rows
 const double PIXEL_HALF = PIXEL_WIDTH / 2.0;
 const double VIEW_WIDTH = PIXELS_ACROSS * PIXEL_WIDTH; // 1.5 units across
 const double VIEW_LEFT = -VIEW_WIDTH / 2.0;            // -0.75
+const int BLOCK = 8;
 
 const double SPHERE_RADIUS = 0.25;
 int fov;
 double fovRadians, eyeDistance;
 Vector3 eyeCoordinate, lightPos;
 Plane flooring, ceiling, leftWall, rightWall, backWall;
-// Sphere sphere;
-
+Sphere sphere;
 std::vector<Plane> scene;
+double lightAngle = 0.0;
+
+struct Hit
+{
+    bool didHit = true;
+    Vector3 point;
+    Vector3 normal;
+    Vector3 color;
+    double distance = 0.0;
+
+    Hit() = default;
+    Hit(bool didHit, Vector3 point, Vector3 normal, Vector3 color, double distance)
+        : didHit(didHit), point(point), normal(normal), color(color), distance(distance) {}
+};
 
 uint32_t rgbToColor(uint8_t r, uint8_t g, uint8_t b);
 void raytracerSceneSetup();
 Ray generateRayForPixel(int xPixelIndex, int yPixelIndex);
 void setPixelColor(int xPixelIndex, int yPixelIndex, Vector3 color);
 double clamp01(double v);
-Vector3 traceRay(Ray ray);
+Hit traceRay(Ray ray);
 
 void setup()
 {
@@ -44,23 +59,74 @@ void setup()
 
 void loop()
 {
-    static bool rendered = false;
-    if (rendered)
-    {
-        delay(1000);
-        return;
-    }
+    Serial.begin(115200);
+    delay(1000);
+    lightAngle += 0.25; // radians per frame, ~25 frames per orbit
+    lightPos.x = std::cos(lightAngle) * 0.5;
+    lightPos.z = std::sin(lightAngle) * 0.5;
+    lightPos.y = 0.8;
 
-    for (int x = 0; x < PIXELS_ACROSS; x++)
+    lightAngle += 0.25; // radians per frame, ~25 frames per orbit
+    lightPos.x = std::cos(lightAngle) * 0.5;
+    lightPos.z = std::sin(lightAngle) * 0.5;
+    lightPos.y = 0.8;
+
+    for (int y = 0; y < PIXELS_DOWN; y += BLOCK)
     {
-        for (int y = 0; y < PIXELS_DOWN; y++)
+        for (int x = 0; x < PIXELS_ACROSS; x += BLOCK)
         {
-            setPixelColor(x, y, traceRay(generateRayForPixel(x, y)));
+            Hit h = traceRay(generateRayForPixel(x, y));
+
+            Vector3 c(0.0, 0.0, 0.0);
+
+            if (h.didHit)
+            {
+                Vector3 toLight = Vector3::fromTo(h.point, lightPos);
+                auto shadow = sphere.raycast(Ray(h.point, toLight));
+                bool blocked = std::get<0>(shadow) && std::get<3>(shadow) < toLight.length();
+
+                double lambert = 0.0;
+                if (!blocked)
+                {
+                    lambert = h.normal.dot(toLight.clone().normalize());
+                    if (lambert < 0.0)
+                        lambert = 0.0;
+
+                    // after computing lambert, inside the render loop
+                    if (x == 120 && y == 160)
+                    {
+                        Ray probe = generateRayForPixel(x, y);
+                        Serial.print("origin: ");
+                        Serial.print(probe.getOrigin().x);
+                        Serial.print(",");
+                        Serial.print(probe.getOrigin().y);
+                        Serial.print(",");
+                        Serial.println(probe.getOrigin().z);
+
+                        Serial.print("dir: ");
+                        Serial.print(probe.getDirection().x);
+                        Serial.print(",");
+                        Serial.print(probe.getDirection().y);
+                        Serial.print(",");
+                        Serial.print(probe.getDirection().z);
+                        Serial.print("  len: ");
+                        Serial.println(probe.getDirection().length());
+                    }
+                }
+
+                c = h.color.clone().multiplyScalar(lambert);
+            }
+
+            uint32_t packed = rgbToColor(
+                (uint8_t)(clamp01(c.x) * 255.0),
+                (uint8_t)(clamp01(c.y) * 255.0),
+                (uint8_t)(clamp01(c.z) * 255.0));
+
+            k10.canvas->canvasRectangle(x, y, BLOCK, BLOCK, packed, packed, true);
         }
-        k10.canvas->updateCanvas(); // one push per column, so you can watch it fill
     }
 
-    rendered = true;
+    k10.canvas->updateCanvas();
 }
 
 uint32_t rgbToColor(uint8_t r, uint8_t g, uint8_t b)
@@ -90,7 +156,7 @@ void raytracerSceneSetup()
     eyeCoordinate = Vector3(0.0, 0.0, -3.0);
 
     // Scene objects
-    // sphere = Sphere(v, SPHERE_RADIUS)
+    sphere = Sphere(Vector3(0, 0.15, -0.3), SPHERE_RADIUS, Vector3(1, 1, 0));
     flooring = Plane(Vector3(0, 1, 0), Vector3(0, -0.25, 0));
     leftWall = Plane(Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 1, 0));
     rightWall = Plane(Vector3(-1, 0, 0), Vector3(1, 0, 0), Vector3(1, 0, 0));
@@ -131,11 +197,11 @@ void setPixelColor(int xPixelIndex, int yPixelIndex, Vector3 color)
 }
 
 // walks every plane, keeps the closest hit
-Vector3 traceRay(Ray ray)
+Hit traceRay(Ray ray)
 {
     Vector3 background(0.0, 0.0, 0.0);
     double nearest = 1e30;
-    bool found = false;
+    Hit best;
 
     for (int i = 0; i < (int)scene.size(); i++)
     {
@@ -144,10 +210,26 @@ Vector3 traceRay(Ray ray)
         if (std::get<0>(result) && std::get<3>(result) < nearest)
         {
             nearest = std::get<3>(result);
-            background = scene[i].getColor();
-            found = true;
+            best = {
+                true,
+                std::get<1>(result),
+                std::get<2>(result),
+                scene[i].getColor(),
+                nearest};
         }
     }
 
-    return found ? background : Vector3(0.0, 0.0, 0.0);
+    auto sphereHit = sphere.raycast(ray);
+    if (std::get<0>(sphereHit) && std::get<3>(sphereHit) < nearest)
+    {
+        nearest = std::get<3>(sphereHit);
+        best = {
+            true,
+            std::get<1>(sphereHit),
+            std::get<2>(sphereHit),
+            sphere.getColor(),
+            nearest};
+    }
+
+    return best;
 }
